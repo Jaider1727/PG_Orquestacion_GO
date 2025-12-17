@@ -1,0 +1,27 @@
+# permissions for end users to edit edgenodestatuses.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  labels:
+    app.kubernetes.io/name: edge-operator
+    app.kubernetes.io/managed-by: kustomize
+  name: edgenodestatus-editor-role
+rules:
+- apiGroups:
+  - iot.iot.example.com
+  resources:
+  - edgenodestatuses
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+- apiGroups:
+  - iot.iot.example.com
+  resources:
+  - edgenodestatuses/status
+  verbs:
+  - get

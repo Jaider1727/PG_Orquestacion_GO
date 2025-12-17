@@ -1,0 +1,48 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: edgenodestatuses.iot.example.com
+spec:
+  group: iot.example.com
+  scope: Cluster
+  names:
+    plural: edgenodestatuses
+    singular: edgenodestatus
+    kind: EdgeNodeStatus
+    shortNames:
+      - ens
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          properties:
+            spec:
+              type: object
+              properties:
+                nodeName:
+                  type: string
+                nodeType:
+                  type: string
+                  enum: ["reducido", "normal"]
+                location:
+                  type: string
+            status:
+              type: object
+              properties:
+                connected:
+                  type: boolean
+                lastHeartbeat:
+                  type: string
+                  format: date-time
+                batteryLevel:
+                  type: integer
+                cpuUsage:
+                  type: integer
+                criticalPods:
+                  type: array
+                  items:
+                    type: string
+

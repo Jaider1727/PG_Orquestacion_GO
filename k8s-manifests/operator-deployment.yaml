@@ -1,0 +1,28 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: edge-operator
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: edge-operator
+  template:
+    metadata:
+      labels:
+        app: edge-operator
+    spec:
+      serviceAccountName: edge-operator-sa
+      containers:
+        - name: edge-operator
+          image: jaiderssjgod/edge-operator:latest
+          imagePullPolicy: Always
+          resources:
+            limits:
+              cpu: "100m"
+              memory: "50Mi"
+            requests:
+              cpu: "50m"
+              memory: "25Mi"
+      restartPolicy: Always
