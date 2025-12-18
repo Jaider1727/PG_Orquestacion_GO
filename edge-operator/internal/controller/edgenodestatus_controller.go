@@ -19,6 +19,7 @@ package controller
 import (
 	"context"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -56,6 +57,30 @@ func (r *EdgeNodeStatusReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	log.Info("Reconciliando nodo", "name", nodeStatus.Name, "connected", nodeStatus.Status.Connected, "battery", nodeStatus.Status.BatteryLevel)
+
+	if nodeStatus.Spec.NodeType == "reducido" {
+		var node corev1.Node
+		err := r.Get(ctx, client.ObjectKey{Name: nodeStatus.Spec.NodeName}, &node)
+		if err != nil {
+			log.Error(err, "no se pudo obtener el nodo para etiquetar")
+			return ctrl.Result{}, err
+		}
+
+		// Verificar si ya tiene el label
+		const labelKey = "iot.example.com/type"
+		if node.Labels[labelKey] != "reducido" {
+			if node.Labels == nil {
+				node.Labels = map[string]string{}
+			}
+			node.Labels[labelKey] = "reducido"
+
+			if err := r.Update(ctx, &node); err != nil {
+				log.Error(err, "no se pudo actualizar el nodo con etiqueta")
+				return ctrl.Result{}, err
+			}
+			log.Info("Etiqueta 'reducido' aplicada al nodo", "node", node.Name)
+		}
+	}
 
 	return ctrl.Result{}, nil
 }
