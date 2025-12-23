@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math/rand"
 	"os"
 	"time"
 
@@ -19,6 +20,8 @@ var (
 )
 
 func main() {
+	rand.Seed(time.Now().UnixNano()) // para datos aleatorios distintos en cada ejecución
+
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
 		fmt.Println("NODE_NAME no definido")
@@ -40,9 +43,13 @@ func main() {
 		now := time.Now().UTC().Format(time.RFC3339)
 		connected := true
 
+		//Datos de prueba
+		batteryLevel := rand.Intn(41) + 60
+		cpuUsage := rand.Intn(21) + 30
+
 		var lastErr error
 		for i := 0; i < maxRetries; i++ {
-			err = tryPatchStatus(k8sClient, nodeName, now, true)
+			err = tryPatchStatus(k8sClient, nodeName, now, connected, batteryLevel, cpuUsage)
 			if err == nil {
 				break
 			}
@@ -55,10 +62,9 @@ func main() {
 			connected = false
 		}
 
-		// Solo marcar desconectado si cambia el estado
 		if connected != prevConnected {
 			now := time.Now().UTC().Format(time.RFC3339)
-			_ = tryPatchStatus(k8sClient, nodeName, now, connected)
+			_ = tryPatchStatus(k8sClient, nodeName, now, connected, batteryLevel, cpuUsage)
 			if connected {
 				fmt.Println("Reconectado: marcado como conectado")
 			} else {
@@ -66,14 +72,14 @@ func main() {
 			}
 			prevConnected = connected
 		} else {
-			fmt.Println("Estado estable, sin cambios")
+			fmt.Printf("Estado actualizado dinámicamente - Battery: %d%% CPU: %d%%\n", batteryLevel, cpuUsage)
 		}
 
 		time.Sleep(15 * time.Second)
 	}
 }
 
-func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, connected bool) error {
+func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, connected bool, battery int, cpu int) error {
 	ens := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "iot.example.com/v1alpha1",
@@ -89,8 +95,8 @@ func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, 
 			"status": map[string]interface{}{
 				"connected":     connected,
 				"lastHeartbeat": heartbeat,
-				"batteryLevel":  87,
-				"cpuUsage":      41,
+				"batteryLevel":  battery,
+				"cpuUsage":      cpu,
 				"criticalPods":  []string{"sensor-reader", "local-cache"},
 			},
 		},
