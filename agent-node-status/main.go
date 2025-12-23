@@ -80,6 +80,12 @@ func main() {
 }
 
 func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, connected bool, battery int, cpu int) error {
+	criticalPods, err := detectarPodsCriticos(context.TODO(), k8sClient, nodeName)
+	if err != nil {
+		fmt.Printf("Error obteniendo pods críticos: %v\n", err)
+		criticalPods = []string{}
+	}
+
 	ens := &unstructured.Unstructured{
 		Object: map[string]interface{}{
 			"apiVersion": "iot.example.com/v1alpha1",
@@ -97,7 +103,7 @@ func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, 
 				"lastHeartbeat": heartbeat,
 				"batteryLevel":  battery,
 				"cpuUsage":      cpu,
-				"criticalPods":  []string{"sensor-reader", "local-cache"},
+				"criticalPods":  criticalPods,
 			},
 		},
 	}
@@ -111,4 +117,27 @@ func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, 
 	return k8sClient.Patch(context.TODO(), ens, client.Apply, &client.PatchOptions{
 		FieldManager: "agent",
 	})
+}
+func detectarPodsCriticos(ctx context.Context, c client.Client, nodeName string) ([]string, error) {
+	var podList unstructured.UnstructuredList
+	podList.SetGroupVersionKind(schema.GroupVersionKind{
+		Group:   "",
+		Version: "v1",
+		Kind:    "PodList",
+	})
+
+	if err := c.List(ctx, &podList); err != nil {
+		return nil, err
+	}
+
+	var criticos []string
+	for _, pod := range podList.Items {
+		if pod.GetNamespace() != "kube-system" && pod.GetLabels()["critical"] == "true" {
+			if pod.Object["spec"].(map[string]interface{})["nodeName"] == nodeName {
+				criticos = append(criticos, pod.GetName())
+			}
+		}
+	}
+
+	return criticos, nil
 }
