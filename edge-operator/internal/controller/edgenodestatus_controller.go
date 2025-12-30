@@ -1,25 +1,8 @@
-/*
-Copyright 2025.
-
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
 package controller
 
 import (
 	"context"
 
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,25 +11,11 @@ import (
 	iotv1alpha1 "edge-operator/api/v1alpha1"
 )
 
-// EdgeNodeStatusReconciler reconciles a EdgeNodeStatus object
 type EdgeNodeStatusReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme
 }
 
-// +kubebuilder:rbac:groups=iot.iot.example.com,resources=edgenodestatuses,verbs=get;list;watch;create;update;patch;delete
-// +kubebuilder:rbac:groups=iot.iot.example.com,resources=edgenodestatuses/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=iot.iot.example.com,resources=edgenodestatuses/finalizers,verbs=update
-
-// Reconcile is part of the main kubernetes reconciliation loop which aims to
-// move the current state of the cluster closer to the desired state.
-// TODO(user): Modify the Reconcile function to compare the state specified by
-// the EdgeNodeStatus object against the actual cluster state, and then
-// perform operations to make the cluster state reflect the state specified by
-// the user.
-//
-// For more details, check Reconcile and its Result here:
-// - https://pkg.go.dev/sigs.k8s.io/controller-runtime@v0.18.2/pkg/reconcile
 func (r *EdgeNodeStatusReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := log.FromContext(ctx)
 
@@ -56,36 +25,17 @@ func (r *EdgeNodeStatusReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	log.Info("Reconciliando nodo", "name", nodeStatus.Name, "connected", nodeStatus.Status.Connected, "battery", nodeStatus.Status.BatteryLevel)
-
-	if nodeStatus.Spec.NodeType == "reducido" {
-		var node corev1.Node
-		err := r.Get(ctx, client.ObjectKey{Name: nodeStatus.Spec.NodeName}, &node)
-		if err != nil {
-			log.Error(err, "no se pudo obtener el nodo para etiquetar")
-			return ctrl.Result{}, err
-		}
-
-		// Verificar si ya tiene el label
-		const labelKey = "iot.example.com/type"
-		if node.Labels[labelKey] != "reducido" {
-			if node.Labels == nil {
-				node.Labels = map[string]string{}
-			}
-			node.Labels[labelKey] = "reducido"
-
-			if err := r.Update(ctx, &node); err != nil {
-				log.Error(err, "no se pudo actualizar el nodo con etiqueta")
-				return ctrl.Result{}, err
-			}
-			log.Info("Etiqueta 'reducido' aplicada al nodo", "node", node.Name)
-		}
-	}
+	log.Info("🔁 Nodo actualizado",
+		"name", nodeStatus.Name,
+		"connected", nodeStatus.Status.Connected,
+		"battery", nodeStatus.Status.BatteryLevel,
+		"cpu", nodeStatus.Status.CPUUsage,
+		"criticalPods", nodeStatus.Status.CriticalPods,
+	)
 
 	return ctrl.Result{}, nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
 func (r *EdgeNodeStatusReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&iotv1alpha1.EdgeNodeStatus{}).
