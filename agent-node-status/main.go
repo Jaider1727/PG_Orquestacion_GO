@@ -20,7 +20,7 @@ var (
 )
 
 func main() {
-	rand.Seed(time.Now().UnixNano()) // para datos aleatorios distintos en cada ejecución
+	rand.Seed(time.Now().UnixNano())
 
 	nodeName := os.Getenv("NODE_NAME")
 	if nodeName == "" {
@@ -43,13 +43,12 @@ func main() {
 		now := time.Now().UTC().Format(time.RFC3339)
 		connected := true
 
-		//Datos de prueba
 		batteryLevel := rand.Intn(41) + 60
 		cpuUsage := rand.Intn(21) + 30
 
 		var lastErr error
 		for i := 0; i < maxRetries; i++ {
-			err = tryPatchStatus(k8sClient, nodeName, now, connected, batteryLevel, cpuUsage)
+			err = tryUpdateStatus(k8sClient, nodeName, now, connected, batteryLevel, cpuUsage)
 			if err == nil {
 				break
 			}
@@ -64,7 +63,7 @@ func main() {
 
 		if connected != prevConnected {
 			now := time.Now().UTC().Format(time.RFC3339)
-			_ = tryPatchStatus(k8sClient, nodeName, now, connected, batteryLevel, cpuUsage)
+			_ = tryUpdateStatus(k8sClient, nodeName, now, connected, batteryLevel, cpuUsage)
 			if connected {
 				fmt.Println("Reconectado: marcado como conectado")
 			} else {
@@ -79,12 +78,8 @@ func main() {
 	}
 }
 
-func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, connected bool, battery int, cpu int) error {
-	criticalPods, err := detectarPodsCriticos(context.TODO(), k8sClient, nodeName)
-	if err != nil {
-		fmt.Printf("Error obteniendo pods críticos: %v\n", err)
-		criticalPods = []string{}
-	}
+func tryUpdateStatus(k8sClient client.Client, nodeName, heartbeat string, connected bool, battery, cpu int) error {
+	ctx := context.TODO()
 
 	ens := &unstructured.Unstructured{
 		Object: map[string]interface{}{
@@ -95,7 +90,7 @@ func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, 
 			},
 			"spec": map[string]interface{}{
 				"nodeName": nodeName,
-				"nodeType": "reducido",
+				"nodeType": "normal",
 				"location": "AWS-Zone-1",
 			},
 			"status": map[string]interface{}{
@@ -103,7 +98,7 @@ func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, 
 				"lastHeartbeat": heartbeat,
 				"batteryLevel":  battery,
 				"cpuUsage":      cpu,
-				"criticalPods":  criticalPods,
+				"criticalPods":  []interface{}{}, // actualizado más abajo
 			},
 		},
 	}
@@ -114,10 +109,25 @@ func tryPatchStatus(k8sClient client.Client, nodeName string, heartbeat string, 
 		Kind:    "EdgeNodeStatus",
 	})
 
-	return k8sClient.Patch(context.TODO(), ens, client.Apply, &client.PatchOptions{
+	// Detectar pods críticos
+	criticalPods, err := detectarPodsCriticos(ctx, k8sClient, nodeName)
+	if err != nil {
+		fmt.Printf("Error obteniendo pods críticos: %v\n", err)
+		criticalPods = []string{}
+	}
+	critArr := make([]interface{}, len(criticalPods))
+	for i, pod := range criticalPods {
+		critArr[i] = pod
+	}
+	_ = unstructured.SetNestedSlice(ens.Object, critArr, "status", "criticalPods")
+
+	force := true
+	return k8sClient.Patch(ctx, ens, client.Apply, &client.PatchOptions{
 		FieldManager: "agent",
+		Force:        &force,
 	})
 }
+
 func detectarPodsCriticos(ctx context.Context, c client.Client, nodeName string) ([]string, error) {
 	var podList unstructured.UnstructuredList
 	podList.SetGroupVersionKind(schema.GroupVersionKind{
@@ -133,11 +143,11 @@ func detectarPodsCriticos(ctx context.Context, c client.Client, nodeName string)
 	var criticos []string
 	for _, pod := range podList.Items {
 		if pod.GetNamespace() != "kube-system" && pod.GetLabels()["critical"] == "true" {
-			if pod.Object["spec"].(map[string]interface{})["nodeName"] == nodeName {
+			spec := pod.Object["spec"].(map[string]interface{})
+			if spec["nodeName"] == nodeName {
 				criticos = append(criticos, pod.GetName())
 			}
 		}
 	}
-
 	return criticos, nil
 }
