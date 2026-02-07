@@ -1,30 +1,31 @@
 package api
 
-import (
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-)
+import metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
-// EdgeNodeStatusSpec es la parte declarativa del CR
-type EdgeNodeStatusSpec struct {
-	NodeName string `json:"nodeName"`
-	NodeType string `json:"nodeType"` // "normal" o "reducido"
-	Location string `json:"location"`
+type ReducedNodeStatusSpec struct {
+	NodeName        string      `json:"nodeName"`
+	State           string      `json:"state"` // Online, Offline, Degraded
+	IsReduced       bool        `json:"isReduced"`
+	BatteryLevel    int         `json:"batteryLevel"`
+	CpuLoad         float64     `json:"cpuLoad"`
+	MemoryUsageMB   int         `json:"memoryUsageMB"`
+	LastHeartbeat   metav1.Time `json:"lastHeartbeat"`
+	CriticalPods    []string    `json:"criticalPods"`
+	NonCriticalPods []string    `json:"nonCriticalPods"`
+	OfflineEvents   []string    `json:"offlineEvents"`
 }
 
-// EdgeNodeStatusStatus es la parte observable del CR
-type EdgeNodeStatusStatus struct {
-	Connected     bool     `json:"connected"`
-	LastHeartbeat string   `json:"lastHeartbeat"`
-	BatteryLevel  int      `json:"batteryLevel"`
-	CPUUsage      int      `json:"cpuUsage"`
-	CriticalPods  []string `json:"criticalPods"`
+type ReducedNodeStatusStatus struct {
+	Reconciled       bool        `json:"reconciled"`
+	LastSynced       metav1.Time `json:"lastSynced"`
+	NeedsMigration   bool        `json:"needsMigration"`
+	PolicyViolations []string    `json:"policyViolations"`
 }
 
-// EdgeNodeStatus representa el CR completo
-type EdgeNodeStatus struct {
+type ReducedNodeStatus struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 
-	Spec   EdgeNodeStatusSpec   `json:"spec"`
-	Status EdgeNodeStatusStatus `json:"status"`
+	Spec   ReducedNodeStatusSpec   `json:"spec,omitempty"`
+	Status ReducedNodeStatusStatus `json:"status,omitempty"`
 }
