@@ -1,4 +1,4 @@
-module agent-node-status
+module github.com/jaiderssjgod/agent-node-status
 
 go 1.24.3
 

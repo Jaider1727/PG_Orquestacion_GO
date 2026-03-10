@@ -3,9 +3,11 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -15,13 +17,16 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+
+	"github.com/jaiderssjgod/agent-node-status/heartbeat"
 )
 
 const (
-	criticalLabelKey = "iot/critical"
-	nodeTypeLabel    = "node-type"
-	nodeTypeValue    = "reducido"
-	checkInterval    = 20 * time.Second
+	criticalLabelKey  = "iot/critical"
+	nodeTypeLabel     = "node-type"
+	nodeTypeValue     = "reducido"
+	checkInterval     = 20 * time.Second
+	heartbeatInterval = 10 * time.Second
 )
 
 func main() {
@@ -45,13 +50,76 @@ func main() {
 		panic("NODE_NAME env var required")
 	}
 
+	// OPERATOR_HEARTBEAT_URL es la URL del endpoint del operador, e.g.:
+	// http://edge-operator-service.edge-system.svc.cluster.local:8080/heartbeat
+	operatorURL := os.Getenv("OPERATOR_HEARTBEAT_URL")
+	if operatorURL == "" {
+		fmt.Fprintf(os.Stderr, "[AGENT ERROR] OPERATOR_HEARTBEAT_URL env var required but missing\n")
+		panic("OPERATOR_HEARTBEAT_URL env var required")
+	}
+
 	fmt.Printf("[AGENT] Running on node: %s\n", nodeName)
 
+	// Goroutine independiente para el heartbeat (cada 10 s)
+	go runHeartbeatLoop(nodeName, operatorURL)
+
+	// Loop principal de monitoreo (cada 20 s)
 	for {
 		fmt.Println("[AGENT] Monitoring node...")
 		monitorNode(clientset, nodeName)
 		time.Sleep(checkInterval)
 	}
+}
+
+// runHeartbeatLoop envía un heartbeat al operador cada heartbeatInterval.
+// Corre en su propia goroutine para ser independiente del ciclo de monitoreo.
+func runHeartbeatLoop(nodeName, operatorURL string) {
+	ticker := time.NewTicker(heartbeatInterval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		sendHeartbeat(nodeName, operatorURL)
+	}
+}
+
+// sendHeartbeat construye y envía el payload de heartbeat al operador.
+func sendHeartbeat(nodeName, operatorURL string) {
+	payload := heartbeat.Payload{
+		NodeName:  nodeName,
+		Timestamp: time.Now().UTC(),
+		CPU:       readCPUUsage(),
+		Memory:    readMemUsage(),
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[AGENT ERROR] Failed to marshal heartbeat: %v\n", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, operatorURL, bytes.NewReader(body))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[AGENT ERROR] Failed to create heartbeat request: %v\n", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[AGENT ERROR] Failed to send heartbeat: %v\n", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		fmt.Fprintf(os.Stderr, "[AGENT WARN] Heartbeat returned non-200 status: %d\n", resp.StatusCode)
+		return
+	}
+
+	fmt.Printf("[AGENT] Heartbeat sent for node %s at %s\n", nodeName, payload.Timestamp.Format(time.RFC3339))
 }
 
 func monitorNode(clientset *kubernetes.Clientset, nodeName string) {
@@ -66,10 +134,7 @@ func monitorNode(clientset *kubernetes.Clientset, nodeName string) {
 	if v, ok := node.Labels[nodeTypeLabel]; !ok || v != nodeTypeValue {
 		fmt.Printf(
 			"[AGENT] Node %s is not labeled as '%s=%s' (label is '%s'), skipping\n",
-			node.Name,
-			nodeTypeLabel,
-			nodeTypeValue,
-			v,
+			node.Name, nodeTypeLabel, nodeTypeValue, v,
 		)
 		return
 	}
@@ -105,8 +170,7 @@ func monitorNode(clientset *kubernetes.Clientset, nodeName string) {
 	}
 
 	for _, pod := range pods.Items {
-		if pod.Labels[criticalLabelKey] == "true" &&
-			pod.Status.Phase == corev1.PodRunning {
+		if pod.Labels[criticalLabelKey] == "true" && pod.Status.Phase == corev1.PodRunning {
 			status.CriticalPods++
 		}
 	}
@@ -143,7 +207,7 @@ func readCPUUsage() string {
 			system, err3 := strconv.ParseFloat(fields[3], 64)
 			idle, err4 := strconv.ParseFloat(fields[4], 64)
 			if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
-				fmt.Fprintf(os.Stderr, "[AGENT ERROR] Error parsing CPU fields: %v %v %v %v\n", err1, err2, err3, err4)
+				fmt.Fprintf(os.Stderr, "[AGENT ERROR] Error parsing CPU fields\n")
 				return "invalid"
 			}
 
@@ -151,7 +215,6 @@ func readCPUUsage() string {
 			if total == 0 {
 				return "0.00%"
 			}
-
 			usage := ((user + nice + system) / total) * 100.0
 			return fmt.Sprintf("%.2f%%", usage)
 		}
@@ -180,10 +243,8 @@ func readMemUsage() string {
 		if strings.HasPrefix(line, "MemTotal:") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
-				memTotal, err = strconv.ParseFloat(fields[1], 64)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "[AGENT ERROR] Failed to parse MemTotal: %v\n", err)
-				} else {
+				if v, err := strconv.ParseFloat(fields[1], 64); err == nil {
+					memTotal = v
 					foundTotal = true
 				}
 			}
@@ -191,10 +252,8 @@ func readMemUsage() string {
 		if strings.HasPrefix(line, "MemAvailable:") {
 			fields := strings.Fields(line)
 			if len(fields) >= 2 {
-				memAvailable, err = strconv.ParseFloat(fields[1], 64)
-				if err != nil {
-					fmt.Fprintf(os.Stderr, "[AGENT ERROR] Failed to parse MemAvailable: %v\n", err)
-				} else {
+				if v, err := strconv.ParseFloat(fields[1], 64); err == nil {
+					memAvailable = v
 					foundAvail = true
 				}
 			}
@@ -210,4 +269,3 @@ func readMemUsage() string {
 	usage := (used / memTotal) * 100.0
 	return fmt.Sprintf("%.2f%%", usage)
 }
-
