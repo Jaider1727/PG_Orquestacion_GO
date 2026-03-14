@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: reduced-node-agent
+  labels:
+    app: reduced-node-agent
+spec:
+  selector:
+    matchLabels:
+      app: reduced-node-agent
+  template:
+    metadata:
+      labels:
+        app: reduced-node-agent
+    spec:
+      serviceAccountName: reduced-node-agent
+      containers:
+        - name: agent
+          image: docker.io/jaiderssjgod/agent-node-status:v4
+          imagePullPolicy: Always
+          env:
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OPERATOR_HEARTBEAT_URL
+              value: "http://reduced-node-operator-service.default.svc.cluster.local:9090/heartbeat"
+          securityContext:
+            privileged: false
+
+
+
+
+

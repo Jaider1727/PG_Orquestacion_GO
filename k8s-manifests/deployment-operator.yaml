@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reduced-node-operator
+  labels:
+    app: reduced-node-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: reduced-node-operator
+  template:
+    metadata:
+      labels:
+        app: reduced-node-operator
+    spec:
+      serviceAccountName: reduced-node-operator
+      containers:
+        - name: operator
+          image: docker.io/jaiderssjgod/edge-operator:v8
+          imagePullPolicy: Always
+          command:
+            - /manager
+          ports:
+            - name: heartbeat
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: GRACE_PERIOD_SECONDS
+              value: "120"
+
+
+

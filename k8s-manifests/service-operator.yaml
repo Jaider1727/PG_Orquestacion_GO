@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: reduced-node-operator-service
+  namespace: default
+spec:
+  selector:
+    app: reduced-node-operator
+  ports:
+    - name: heartbeat
+      port: 9090
+      targetPort: 9090
+  type: ClusterIP
+
+
+
+

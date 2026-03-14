@@ -1,0 +1,18 @@
+  GNU nano 8.3                                                                          reduced-policy.yaml
+apiVersion: iot.mydomain.com/v1alpha1
+kind: ReducedNodePolicy
+metadata:
+  name: reduced-policy
+spec:
+  nodeSelector:
+    node-type: reducido
+  gracePeriodSeconds: 30
+  criticalLabelKey: "critical"
+  maxCPUThreshold: 80
+  maxMemoryThreshold: 80
+
+
+
+
+
+
