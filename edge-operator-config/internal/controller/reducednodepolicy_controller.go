@@ -1,139 +1,225 @@
-// internal/controller/reducednodepolicy_controller.go
 package controller
 
 import (
-	"context"
-	"time"
+    "context"
+    "os"
+    "strconv"
+    "time"
 
-	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	ctrl "sigs.k8s.io/controller-runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/handler"
+    "github.com/go-logr/logr"
+    corev1 "k8s.io/api/core/v1"
+    metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+    "k8s.io/apimachinery/pkg/runtime"
+    ctrl "sigs.k8s.io/controller-runtime"
+    "sigs.k8s.io/controller-runtime/pkg/client"
+    "sigs.k8s.io/controller-runtime/pkg/handler"
 
-	iotv1alpha1 "github.com/jaiderssjgod/edge-operator/api/v1alpha1"
-	"github.com/jaiderssjgod/edge-operator/internal/degradation"
-	"github.com/jaiderssjgod/edge-operator/internal/heartbeatstore"
+    iotv1alpha1 "github.com/jaiderssjgod/edge-operator/api/v1alpha1"
+    "github.com/jaiderssjgod/edge-operator/internal/degradation"
+    "github.com/jaiderssjgod/edge-operator/internal/heartbeatstore"
 )
 
 const (
-	heartbeatTimeout = 30 * time.Second
-	requeueInterval  = 15 * time.Second
+    heartbeatTimeout        = 30 * time.Second
+    requeueInterval         = 15 * time.Second
+    defaultGracePeriodSecs  = 60
 )
+
+// gracePeriod lee GRACE_PERIOD_SECONDS del entorno; si no existe usa el default.
+func gracePeriod() time.Duration {
+    if raw := os.Getenv("GRACE_PERIOD_SECONDS"); raw != "" {
+        if secs, err := strconv.Atoi(raw); err == nil && secs > 0 {
+            return time.Duration(secs) * time.Second
+        }
+    }
+    return defaultGracePeriodSecs * time.Second
+}
 
 // ReducedNodePolicyReconciler reconcilia objetos ReducedNodePolicy.
 type ReducedNodePolicyReconciler struct {
-	client.Client
-	Log                logr.Logger
-	Scheme             *runtime.Scheme
-	HeartbeatStore     *heartbeatstore.Store
-	DegradationManager *degradation.Manager // ← nuevo campo inyectado
+    client.Client
+    Log                logr.Logger
+    Scheme             *runtime.Scheme
+    HeartbeatStore     *heartbeatstore.Store
+    DegradationManager *degradation.Manager
 }
 
 func (r *ReducedNodePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
-	log := r.Log.WithValues("reducednodepolicy", req.NamespacedName)
+    log := r.Log.WithValues("reducednodepolicy", req.NamespacedName)
 
-	var policy iotv1alpha1.ReducedNodePolicy
-	if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
-		return ctrl.Result{}, client.IgnoreNotFound(err)
-	}
+    var policy iotv1alpha1.ReducedNodePolicy
+    if err := r.Get(ctx, req.NamespacedName, &policy); err != nil {
+        return ctrl.Result{}, client.IgnoreNotFound(err)
+    }
 
-	var nodeList corev1.NodeList
-	if err := r.List(ctx, &nodeList, client.MatchingLabels(policy.Spec.NodeSelector)); err != nil {
-		return ctrl.Result{}, err
-	}
+    var nodeList corev1.NodeList
+    if err := r.List(ctx, &nodeList, client.MatchingLabels(policy.Spec.NodeSelector)); err != nil {
+        return ctrl.Result{}, err
+    }
 
-	if policy.Status.Nodes == nil {
-		policy.Status.Nodes = make(map[string]iotv1alpha1.NodeHeartbeatStatus)
-	}
+    if policy.Status.Nodes == nil {
+        policy.Status.Nodes = make(map[string]iotv1alpha1.NodeHeartbeatStatus)
+    }
 
-	offlineCount := 0
+    offlineCount := 0
+    gp := gracePeriod()
 
-	for _, node := range nodeList.Items {
-		log.Info("Procesando nodo", "name", node.Name)
+    for _, node := range nodeList.Items {
+        log.Info("Procesando nodo", "name", node.Name)
 
-		if err := r.ensureNodeLabeled(ctx, log, &node); err != nil {
-			continue
-		}
+        if err := r.ensureNodeLabeled(ctx, log, &node); err != nil {
+            continue
+        }
 
-		nodeState := r.HeartbeatStore.GetNodeState(node.Name)
-		state := "online"
-		if nodeState.Offline {
-			state = "offline"
-			offlineCount++
-			log.Info("Nodo OFFLINE detectado", "node", node.Name)
+        nodeState := r.HeartbeatStore.GetNodeState(node.Name)
+        existing := policy.Status.Nodes[node.Name]
 
-			// RF-04: degradar pods no críticos cuando el nodo está offline
-			if err := r.DegradationManager.EvictNonCriticalPods(ctx, node.Name); err != nil {
-				log.Error(err, "Error durante la degradación del nodo", "node", node.Name)
-				// No bloqueamos la reconciliación por un error de degradación
-			}
-		}
+        var hbStatus iotv1alpha1.NodeHeartbeatStatus
 
-		hbStatus := iotv1alpha1.NodeHeartbeatStatus{
-			State:  state,
-			CPU:    nodeState.CPU,
-			Memory: nodeState.Memory,
-		}
-		if !nodeState.LastHeartbeat.IsZero() {
-			hbStatus.LastHeartbeat = metav1.NewTime(nodeState.LastHeartbeat)
-		}
-		policy.Status.Nodes[node.Name] = hbStatus
+        if nodeState.Offline {
+            offlineCount++
+            hbStatus = r.handleOfflineNode(ctx, log, existing, node.Name, nodeState, gp)
+        } else {
+            // Nodo online: limpiar estado offline previo
+            hbStatus = iotv1alpha1.NodeHeartbeatStatus{
+                State:  "online",
+                CPU:    nodeState.CPU,
+                Memory: nodeState.Memory,
+            }
+            if !nodeState.LastHeartbeat.IsZero() {
+                hbStatus.LastHeartbeat = metav1.NewTime(nodeState.LastHeartbeat)
+            }
+            if existing.State == "offline" {
+                log.Info("Nodo recuperado antes de que expirara el grace period",
+                    "node", node.Name)
+                log.Info("Node reconnected after offline period",
+                    "node", node.Name,
+                    "offlineDuration", time.Since(existing.OfflineSince.Time))
+            }
+            // OfflineSince y DegradationExecuted quedan en zero value → reset implícito
+        }
 
-		r.checkCriticalPods(ctx, log, &policy, node.Name)
-	}
+        policy.Status.Nodes[node.Name] = hbStatus
+        r.checkCriticalPods(ctx, log, &policy, node.Name)
+    }
 
-	policy.Status.ObservedNodes = len(nodeList.Items)
-	policy.Status.OfflineNodes = offlineCount
-	policy.Status.LastSync = metav1.NewTime(time.Now())
+    policy.Status.ObservedNodes = len(nodeList.Items)
+    policy.Status.OfflineNodes = offlineCount
+    policy.Status.LastSync = metav1.NewTime(time.Now())
 
-	if err := r.Status().Update(ctx, &policy); err != nil {
-		log.Error(err, "Unable to update ReducedNodePolicy status")
-		return ctrl.Result{}, err
-	}
+    if err := r.Status().Update(ctx, &policy); err != nil {
+        log.Error(err, "Unable to update ReducedNodePolicy status")
+        return ctrl.Result{}, err
+    }
 
-	return ctrl.Result{RequeueAfter: requeueInterval}, nil
+    return ctrl.Result{RequeueAfter: requeueInterval}, nil
 }
 
-// ensureNodeLabeled y checkCriticalPods sin cambios...
+// handleOfflineNode gestiona la lógica de grace period para un nodo offline.
+// Retorna el NodeHeartbeatStatus actualizado.
+func (r *ReducedNodePolicyReconciler) handleOfflineNode(
+    ctx context.Context,
+    log logr.Logger,
+    existing iotv1alpha1.NodeHeartbeatStatus,
+    nodeName string,
+    nodeState heartbeatstore.NodeState, // ajusta al tipo real de tu store
+    gp time.Duration,
+) iotv1alpha1.NodeHeartbeatStatus {
+
+    now := time.Now()
+
+    // Determinar offlineSince: conservar el existente o fijar ahora
+    offlineSince := existing.OfflineSince
+    if existing.State != "offline" || offlineSince.IsZero() {
+        // Primera vez que detectamos el nodo offline en este evento
+        offlineSince = metav1.NewTime(now)
+        log.Info("Nodo OFFLINE detectado, iniciando grace period",
+            "node", nodeName,
+            "offlineSince", offlineSince,
+            "gracePeriod", gp,
+        )
+    }
+
+    hbStatus := iotv1alpha1.NodeHeartbeatStatus{
+        State:               "offline",
+        CPU:                 nodeState.CPU,
+        Memory:              nodeState.Memory,
+        OfflineSince:        offlineSince,
+        DegradationExecuted: existing.DegradationExecuted,
+    }
+    if !nodeState.LastHeartbeat.IsZero() {
+        hbStatus.LastHeartbeat = metav1.NewTime(nodeState.LastHeartbeat)
+    }
+
+    // RF-05: solo degradar si el grace period ya expiró y no se ha degradado antes
+    offlineDuration := now.Sub(offlineSince.Time)
+    switch {
+    case existing.DegradationExecuted:
+        log.Info("Degradación ya ejecutada para este evento offline, omitiendo",
+            "node", nodeName)
+
+    case offlineDuration >= gp:
+        log.Info("Grace period expirado, ejecutando degradación",
+            "node", nodeName,
+            "offlineDuration", offlineDuration,
+            "gracePeriod", gp,
+        )
+        if err := r.DegradationManager.EvictNonCriticalPods(ctx, nodeName); err != nil {
+            log.Error(err, "Error durante la degradación del nodo", "node", nodeName)
+            // No marcamos DegradationExecuted para poder reintentar
+        } else {
+            hbStatus.DegradationExecuted = true
+        }
+
+    default:
+        remaining := gp - offlineDuration
+        log.Info("Nodo offline dentro del grace period, esperando",
+            "node", nodeName,
+            "offlineDuration", offlineDuration,
+            "remaining", remaining,
+        )
+    }
+
+    return hbStatus
+}
+
+// ensureNodeLabeled garantiza que el nodo tenga la etiqueta "node-type=reducido".
 func (r *ReducedNodePolicyReconciler) ensureNodeLabeled(
-	ctx context.Context, log logr.Logger, node *corev1.Node,
+    ctx context.Context, log logr.Logger, node *corev1.Node,
 ) error {
-	if node.Labels["node-type"] == "reducido" {
-		return nil
-	}
-	if node.Labels == nil {
-		node.Labels = map[string]string{}
-	}
-	node.Labels["node-type"] = "reducido"
-	if err := r.Update(ctx, node); err != nil {
-		log.Error(err, "No se pudo etiquetar el nodo", "node", node.Name)
-		return err
-	}
-	return nil
+    if node.Labels["node-type"] == "reducido" {
+        return nil
+    }
+    if node.Labels == nil {
+        node.Labels = map[string]string{}
+    }
+    node.Labels["node-type"] = "reducido"
+    if err := r.Update(ctx, node); err != nil {
+        log.Error(err, "No se pudo etiquetar el nodo", "node", node.Name)
+        return err
+    }
+    return nil
 }
 
+// checkCriticalPods verifica que el nodo tenga al menos un pod crítico activo.
 func (r *ReducedNodePolicyReconciler) checkCriticalPods(
-	ctx context.Context, log logr.Logger,
-	policy *iotv1alpha1.ReducedNodePolicy, nodeName string,
+    ctx context.Context, log logr.Logger,
+    policy *iotv1alpha1.ReducedNodePolicy, nodeName string,
 ) {
-	var podList corev1.PodList
-	if err := r.List(ctx, &podList, client.MatchingFields{"spec.nodeName": nodeName}); err != nil {
-		return
-	}
-	for _, pod := range podList.Items {
-		if pod.Labels[policy.Spec.CriticalLabelKey] == "true" &&
-			pod.Status.Phase == corev1.PodRunning {
-			return
-		}
-	}
-	log.Info("Nodo sin pods críticos activos", "node", nodeName)
+    var podList corev1.PodList
+    if err := r.List(ctx, &podList, client.MatchingFields{"spec.nodeName": nodeName}); err != nil {
+        return
+    }
+    for _, pod := range podList.Items {
+        if pod.Labels[policy.Spec.CriticalLabelKey] == "true" &&
+            pod.Status.Phase == corev1.PodRunning {
+            return
+        }
+    }
+    log.Info("Nodo sin pods críticos activos", "node", nodeName)
 }
 
 func (r *ReducedNodePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
-    // Registrar el índice field:spec.nodeName para poder filtrar pods por nodo
     if err := mgr.GetFieldIndexer().IndexField(
         context.Background(),
         &corev1.Pod{},

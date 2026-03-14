@@ -22,15 +22,23 @@ type ReducedNodePolicySpec struct {
 
 // NodeHeartbeatStatus almacena la información de heartbeat de un nodo individual.
 type NodeHeartbeatStatus struct {
-	// State es "online" u "offline".
-	// +kubebuilder:validation:Enum=online;offline
-	State string `json:"state"`
-	// LastHeartbeat es el timestamp del último heartbeat recibido.
-	LastHeartbeat metav1.Time `json:"lastHeartbeat,omitempty"`
-	// CPU reportado en el último heartbeat.
-	CPU string `json:"cpu,omitempty"`
-	// Memory reportada en el último heartbeat.
-	Memory string `json:"memory,omitempty"`
+    // State es "online" u "offline".
+    // +kubebuilder:validation:Enum=online;offline
+    State string `json:"state"`
+    // LastHeartbeat es el timestamp del último heartbeat recibido.
+    LastHeartbeat metav1.Time `json:"lastHeartbeat,omitempty"`
+    // CPU reportado en el último heartbeat.
+    CPU string `json:"cpu,omitempty"`
+    // Memory reportada en el último heartbeat.
+    Memory string `json:"memory,omitempty"`
+    // OfflineSince registra el momento exacto en que el nodo entró en estado offline.
+    // Se resetea a cero cuando el nodo vuelve a online.
+    // +optional
+    OfflineSince metav1.Time `json:"offlineSince,omitempty"`
+    // DegradationExecuted indica si ya se ejecutó la degradación para este
+    // evento offline, evitando ejecuciones repetidas.
+    // +optional
+    DegradationExecuted bool `json:"degradationExecuted,omitempty"`
 }
 
 // ReducedNodePolicyStatus muestra el estado actual del conjunto de nodos gestionados.
