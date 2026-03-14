@@ -3,6 +3,7 @@ package controller
 import (
     "context"
     "os"
+    "fmt"
     "strconv"
     "time"
 
@@ -89,6 +90,8 @@ func (r *ReducedNodePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
             if !nodeState.LastHeartbeat.IsZero() {
                 hbStatus.LastHeartbeat = metav1.NewTime(nodeState.LastHeartbeat)
             }
+            hbStatus.OfflineEvents = existing.OfflineEvents 
+
             if existing.State == "offline" {
                 log.Info("Nodo recuperado antes de que expirara el grace period",
                     "node", node.Name)
@@ -157,6 +160,7 @@ func (r *ReducedNodePolicyReconciler) handleOfflineNode(
     case existing.DegradationExecuted:
         log.Info("Degradación ya ejecutada para este evento offline, omitiendo",
             "node", nodeName)
+        hbStatus.OfflineEvents = existing.OfflineEvents
 
     case offlineDuration >= gp:
         log.Info("Grace period expirado, ejecutando degradación",
@@ -169,6 +173,13 @@ func (r *ReducedNodePolicyReconciler) handleOfflineNode(
             // No marcamos DegradationExecuted para poder reintentar
         } else {
             hbStatus.DegradationExecuted = true
+                // RF-06: registrar el evento offline con su duración
+            offlineEvent := fmt.Sprintf("offline from %s, degraded at %s (duration: %s)",
+                offlineSince.Time.Format(time.RFC3339),
+                time.Now().UTC().Format(time.RFC3339),
+                offlineDuration.Round(time.Second).String(),
+            )
+            hbStatus.OfflineEvents = append(existing.OfflineEvents, offlineEvent)
         }
 
     default:

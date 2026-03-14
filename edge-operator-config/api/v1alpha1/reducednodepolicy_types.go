@@ -39,6 +39,8 @@ type NodeHeartbeatStatus struct {
     // evento offline, evitando ejecuciones repetidas.
     // +optional
     DegradationExecuted bool `json:"degradationExecuted,omitempty"`
+
+	OfflineEvents []string `json:"offlineEvents,omitempty"`
 }
 
 // ReducedNodePolicyStatus muestra el estado actual del conjunto de nodos gestionados.

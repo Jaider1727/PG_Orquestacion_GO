@@ -63,5 +63,9 @@ spec:
                         format: date-time
                       degradationExecuted:
                         type: boolean
+                      offliineEvents:
+                        type: array
+                        items:
+                          type: string
       subresources:
         status: {}
