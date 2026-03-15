@@ -41,6 +41,8 @@ type NodeHeartbeatStatus struct {
     DegradationExecuted bool `json:"degradationExecuted,omitempty"`
 
 	OfflineEvents []string `json:"offlineEvents,omitempty"`
+	    ResourceDegradationExecuted bool `json:"resourceDegradationExecuted,omitempty"`
+
 }
 
 // ReducedNodePolicyStatus muestra el estado actual del conjunto de nodos gestionados.

@@ -5,6 +5,7 @@ import (
     "os"
     "fmt"
     "strconv"
+    "strings"
     "time"
 
     "github.com/go-logr/logr"
@@ -13,7 +14,7 @@ import (
     "k8s.io/apimachinery/pkg/runtime"
     ctrl "sigs.k8s.io/controller-runtime"
     "sigs.k8s.io/controller-runtime/pkg/client"
-    "sigs.k8s.io/controller-runtime/pkg/handler"
+    controller "sigs.k8s.io/controller-runtime/pkg/controller"
 
     iotv1alpha1 "github.com/jaiderssjgod/edge-operator/api/v1alpha1"
     "github.com/jaiderssjgod/edge-operator/internal/degradation"
@@ -90,7 +91,9 @@ func (r *ReducedNodePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
             if !nodeState.LastHeartbeat.IsZero() {
                 hbStatus.LastHeartbeat = metav1.NewTime(nodeState.LastHeartbeat)
             }
-            hbStatus.OfflineEvents = existing.OfflineEvents 
+            hbStatus.OfflineEvents = existing.OfflineEvents
+            // Preservar el flag de degradación por recursos del ciclo anterior
+            hbStatus.ResourceDegradationExecuted = existing.ResourceDegradationExecuted
 
             if existing.State == "offline" {
                 log.Info("Nodo recuperado antes de que expirara el grace period",
@@ -99,6 +102,9 @@ func (r *ReducedNodePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
                     "node", node.Name,
                     "offlineDuration", time.Since(existing.OfflineSince.Time))
             }
+
+            // Evaluar umbrales de recursos
+            r.checkResourceThresholds(ctx, log, &policy, node.Name, &hbStatus)
             // OfflineSince y DegradationExecuted quedan en zero value → reset implícito
         }
 
@@ -230,6 +236,82 @@ func (r *ReducedNodePolicyReconciler) checkCriticalPods(
     log.Info("Nodo sin pods críticos activos", "node", nodeName)
 }
 
+// parsePercent convierte "85.41%" → 85.41
+func parsePercent(s string) float64 {
+    s = strings.TrimSuffix(s, "%")
+    v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+    if err != nil {
+        return 0
+    }
+    return v
+}
+
+// checkResourceThresholds evalúa si CPU o memoria superan los umbrales
+// definidos en la policy y ejecuta degradación si corresponde.
+func (r *ReducedNodePolicyReconciler) checkResourceThresholds(
+    ctx context.Context,
+    log logr.Logger,
+    policy *iotv1alpha1.ReducedNodePolicy,
+    nodeName string,
+    hbStatus *iotv1alpha1.NodeHeartbeatStatus,
+) {
+    if policy.Spec.MaxCPUThreshold == 0 && policy.Spec.MaxMemoryThreshold == 0 {
+        return
+    }
+
+    cpu := parsePercent(hbStatus.CPU)
+    mem := parsePercent(hbStatus.Memory)
+
+    cpuExceeded := policy.Spec.MaxCPUThreshold > 0 && cpu >= float64(policy.Spec.MaxCPUThreshold)
+    memExceeded := policy.Spec.MaxMemoryThreshold > 0 && mem >= float64(policy.Spec.MaxMemoryThreshold)
+
+    if !cpuExceeded && !memExceeded {
+        // Recursos normalizados → restaurar deployments si estaban escalados a 0
+        if hbStatus.ResourceDegradationExecuted {
+            log.Info("Recursos normalizados, restaurando deployments", "node", nodeName)
+            if err := r.DegradationManager.ScaleUpNonCriticalDeployments(
+                ctx, nodeName, policy.Spec.CriticalLabelKey,
+            ); err != nil {
+                log.Error(err, "Error restaurando deployments", "node", nodeName)
+            }
+        }
+        hbStatus.ResourceDegradationExecuted = false
+        return
+    }
+
+    if hbStatus.ResourceDegradationExecuted {
+        log.Info("Degradación por recursos ya ejecutada, omitiendo",
+            "node", nodeName, "cpu", hbStatus.CPU, "memory", hbStatus.Memory)
+        return
+    }
+
+    if cpuExceeded {
+        log.Info("Umbral de CPU superado, escalando deployments a 0",
+            "node", nodeName, "cpu", hbStatus.CPU, "threshold", policy.Spec.MaxCPUThreshold)
+    }
+    if memExceeded {
+        log.Info("Umbral de memoria superado, escalando deployments a 0",
+            "node", nodeName, "memory", hbStatus.Memory, "threshold", policy.Spec.MaxMemoryThreshold)
+    }
+
+    // ← CAMBIO: ScaleDown en lugar de EvictNonCriticalPods
+    if err := r.DegradationManager.ScaleDownNonCriticalDeployments(
+        ctx, nodeName, policy.Spec.CriticalLabelKey,
+    ); err != nil {
+        log.Error(err, "Error en degradación por recursos", "node", nodeName)
+        return
+    }
+
+    hbStatus.ResourceDegradationExecuted = true
+    event := fmt.Sprintf("resource degradation at %s (cpu: %s, memory: %s)",
+        time.Now().UTC().Format(time.RFC3339),
+        hbStatus.CPU,
+        hbStatus.Memory,
+    )
+    hbStatus.OfflineEvents = append(hbStatus.OfflineEvents, event)
+    log.Info("Degradación por recursos completada", "node", nodeName)
+}
+
 func (r *ReducedNodePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
     if err := mgr.GetFieldIndexer().IndexField(
         context.Background(),
@@ -248,6 +330,6 @@ func (r *ReducedNodePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
 
     return ctrl.NewControllerManagedBy(mgr).
         For(&iotv1alpha1.ReducedNodePolicy{}).
-        Watches(&corev1.Node{}, &handler.EnqueueRequestForObject{}).
+        WithOptions(controller.Options{MaxConcurrentReconciles: 1}).
         Complete(r)
 }

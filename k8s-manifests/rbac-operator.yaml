@@ -12,6 +12,9 @@ rules:
   - apiGroups: ["iot.mydomain.com"]
     resources: ["reducednodepolicies/status"]
     verbs: ["update"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "update"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding

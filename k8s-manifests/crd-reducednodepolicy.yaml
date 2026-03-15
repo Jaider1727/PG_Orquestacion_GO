@@ -67,5 +67,7 @@ spec:
                         type: array
                         items:
                           type: string
+                      resourceDegradationExecuted:
+                        type: boolean
       subresources:
         status: {}
