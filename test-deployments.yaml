@@ -1,0 +1,47 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deploy-non-critical-1
+  labels:                          
+    app: deploy-non-critical-1
+    edge.priority: non-critical
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deploy-non-critical-1
+  template:
+    metadata:
+      labels:
+        app: deploy-non-critical-1
+        edge.priority: non-critical
+    spec:
+      nodeSelector:
+        node-type: reducido
+      containers:
+        - name: app
+          image: nginx
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: deploy-non-critical-2
+  labels:                         
+    app: deploy-non-critical-2
+    edge.priority: non-critical
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: deploy-non-critical-2
+  template:
+    metadata:
+      labels:
+        app: deploy-non-critical-2
+        edge.priority: non-critical
+    spec:
+      nodeSelector:
+        node-type: reducido
+      containers:
+        - name: app
+          image: nginx

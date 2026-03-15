@@ -38,16 +38,19 @@ func (m *Manager) ScaleDownNonCriticalDeployments(ctx context.Context, nodeName,
 }
 
 // ScaleUpNonCriticalDeployments restaura a 1 los Deployments escalados a 0.
+// Busca por labels directamente, no por pods activos (pueden estar en 0).
 func (m *Manager) ScaleUpNonCriticalDeployments(ctx context.Context, nodeName, _ string) error {
-    deployments, err := m.findNonCriticalDeployments(ctx, nodeName)
-    if err != nil {
+    var deployList appsv1.DeploymentList
+    if err := m.Client.List(ctx, &deployList,
+        client.MatchingLabels{PriorityLabelKey: PriorityNonCritical},
+    ); err != nil {
         return err
     }
 
-    for i := range deployments {
-        deploy := &deployments[i]
+    for i := range deployList.Items {
+        deploy := &deployList.Items[i]
         if deploy.Spec.Replicas == nil || *deploy.Spec.Replicas != 0 {
-            continue
+            continue // no fue escalado a 0, omitir
         }
         one := int32(1)
         deploy.Spec.Replicas = &one

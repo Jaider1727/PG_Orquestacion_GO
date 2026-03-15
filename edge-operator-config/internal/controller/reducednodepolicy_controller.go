@@ -15,6 +15,7 @@ import (
     ctrl "sigs.k8s.io/controller-runtime"
     "sigs.k8s.io/controller-runtime/pkg/client"
     controller "sigs.k8s.io/controller-runtime/pkg/controller"
+    appsv1 "k8s.io/api/apps/v1"
 
     iotv1alpha1 "github.com/jaiderssjgod/edge-operator/api/v1alpha1"
     "github.com/jaiderssjgod/edge-operator/internal/degradation"
@@ -93,7 +94,9 @@ func (r *ReducedNodePolicyReconciler) Reconcile(ctx context.Context, req ctrl.Re
             }
             hbStatus.OfflineEvents = existing.OfflineEvents
             // Preservar el flag de degradación por recursos del ciclo anterior
-            hbStatus.ResourceDegradationExecuted = existing.ResourceDegradationExecuted
+// Usar estado real de deployments como fuente de verdad
+            hbStatus.ResourceDegradationExecuted = existing.ResourceDegradationExecuted || 
+                r.hasScaledDownDeployments(ctx)
 
             if existing.State == "offline" {
                 log.Info("Nodo recuperado antes de que expirara el grace period",
@@ -267,14 +270,14 @@ func (r *ReducedNodePolicyReconciler) checkResourceThresholds(
 
     if !cpuExceeded && !memExceeded {
         // Recursos normalizados → restaurar deployments si estaban escalados a 0
-        if hbStatus.ResourceDegradationExecuted {
-            log.Info("Recursos normalizados, restaurando deployments", "node", nodeName)
-            if err := r.DegradationManager.ScaleUpNonCriticalDeployments(
-                ctx, nodeName, policy.Spec.CriticalLabelKey,
-            ); err != nil {
-                log.Error(err, "Error restaurando deployments", "node", nodeName)
+        if hbStatus.ResourceDegradationExecuted || r.hasScaledDownDeployments(ctx) {
+                log.Info("Recursos normalizados, restaurando deployments", "node", nodeName)
+                if err := r.DegradationManager.ScaleUpNonCriticalDeployments(
+                    ctx, nodeName, policy.Spec.CriticalLabelKey,
+                ); err != nil {
+                    log.Error(err, "Error restaurando deployments", "node", nodeName)
+                }
             }
-        }
         hbStatus.ResourceDegradationExecuted = false
         return
     }
@@ -310,6 +313,21 @@ func (r *ReducedNodePolicyReconciler) checkResourceThresholds(
     )
     hbStatus.OfflineEvents = append(hbStatus.OfflineEvents, event)
     log.Info("Degradación por recursos completada", "node", nodeName)
+}
+
+func (r *ReducedNodePolicyReconciler) hasScaledDownDeployments(ctx context.Context) bool {
+    var deployList appsv1.DeploymentList
+    if err := r.Client.List(ctx, &deployList,
+        client.MatchingLabels{"edge.priority": "non-critical"},
+    ); err != nil {
+        return false
+    }
+    for _, deploy := range deployList.Items {
+        if deploy.Spec.Replicas != nil && *deploy.Spec.Replicas == 0 {
+            return true
+        }
+    }
+    return false
 }
 
 func (r *ReducedNodePolicyReconciler) SetupWithManager(mgr ctrl.Manager) error {
